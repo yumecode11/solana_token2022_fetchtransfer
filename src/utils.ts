@@ -1,51 +1,52 @@
-import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
-import { fetchAllDigitalAssetWithTokenByOwner } from "@metaplex-foundation/mpl-token-metadata";
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
-import { publicKey } from "@metaplex-foundation/umi";
-import { dasApi } from "@metaplex-foundation/digital-asset-standard-api";
-import base58 from "bs58";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { SPL_ACCOUNT_LAYOUT } from "@raydium-io/raydium-sdk";
+import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createTransferInstruction, createAssociatedTokenAccountIdempotentInstruction, TOKEN_2022_PROGRAM_ID, getTokenMetadata, getMint } from "@solana/spl-token";
+import { BACKEND_WALLET } from "./config";
+import { error } from "console";
 
 export async function walletScan(address: string) {
     try {
-        const umi = createUmi(new Connection(String(process.env.RPC)));
-        umi.use(dasApi());
 
         // The owner's public key
-        const ownerPublicKey = publicKey(
+        const ownerPublicKey = new PublicKey(
             address
         );
-        const allFTs = await fetchAllDigitalAssetWithTokenByOwner(
-            umi,
-            ownerPublicKey,
+        const connection = new Connection(String(process.env.RPC));
+        const accounts: any[] = [];
+
+        const token2022Accounts = await connection.getTokenAccountsByOwner(
+            ownerPublicKey, { programId: TOKEN_2022_PROGRAM_ID }, "confirmed"
         );
 
-        const feePayer = Keypair.fromSecretKey(
-            base58.decode(String(process.env.TOKEN))
-        );
+        if (token2022Accounts.value.length > 0) {
+            for (const { pubkey, account } of token2022Accounts.value) {
 
-        let datas: TokenData[] = [];
-        for (let i = 0; i < allFTs.length; i++) {
-            if ((allFTs[i].mint.decimals > 0) && (allFTs[i].token.amount > 1000)) {
-                datas.push({
-                    id: allFTs[i].publicKey,
-                    mintSymbol: allFTs[i].metadata.symbol,
-                    decimal: Number(allFTs[i].mint.decimals),
-                    balance: Number(allFTs[i].token.amount),
-                })
+                let price = 0;
+                const options = { method: 'GET', headers: { 'X-API-KEY': String(process.env.BIRDEYE_KEY) } };
+                await fetch(`https://public-api.birdeye.so/defi/price?address=${(SPL_ACCOUNT_LAYOUT.decode(account.data)).mint}`, options)
+                    .then(response => response.json())
+                    .then(response => {
+                        price = Number(response.data.value);
+                    })
+                    .catch(err => console.error(err));
+
+                const metadata = await getTokenMetadata(connection, new PublicKey(String((SPL_ACCOUNT_LAYOUT.decode(account.data)).mint)), 'confirmed', TOKEN_2022_PROGRAM_ID);
+                const mint = await getMint(connection, new PublicKey(String((SPL_ACCOUNT_LAYOUT.decode(account.data)).mint)), 'confirmed', TOKEN_2022_PROGRAM_ID);
+
+                accounts.push({
+                    pubkey,
+                    mintAddress: (SPL_ACCOUNT_LAYOUT.decode(account.data)).mint,
+                    mintSymbol: metadata?.symbol,
+                    balance: parseInt((SPL_ACCOUNT_LAYOUT.decode(account.data)).amount, 10),
+                    decimal: mint.decimals,
+                    uri: metadata?.uri,
+                    price: price
+                    //   programId: account.owner,
+                });
             }
         }
 
-        const tokeAmount = await (new Connection(String(process.env.RPC))).getBalance(feePayer.publicKey);
-        datas.push({
-            id: "AmgUMQeqW8H74trc8UkKjzZWtxBdpS496wh4GLy2mCpo",
-            mintSymbol: "TOKE",
-            decimal: 9,
-            balance: tokeAmount,
-        })
-
-        console.log('all tokens ===> ', datas, ", length ===> ", datas.length);
-
-        return datas;
+        return accounts;
 
     } catch (error) {
         console.error("Error:", error);
@@ -53,9 +54,55 @@ export async function walletScan(address: string) {
     }
 }
 
-type TokenData = {
-    id: string;
-    mintSymbol: string;
-    balance: number;
-    decimal: number;
-};
+export const transferInDynamic = async (
+    receiver: string,
+    amount: number,
+    tokenAddress: string
+) => {
+    try {
+        // const senderKeypair = Keypair.fromSecretKey(new Uint8Array(BACKEND_WALLET_KEYPAIR))
+        const source = await getAssociatedTokenAccount(new PublicKey(BACKEND_WALLET), new PublicKey(tokenAddress));
+        const destination = await getAssociatedTokenAccount(new PublicKey(receiver), new PublicKey(tokenAddress));
+        // const balance = (await solConnection.getTokenAccountBalance(source)).value.amount
+        // console.log("balance ", balance)
+        // const updateCpIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 7_000_000 })
+        // const updateCuIx = ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 })
+
+        const transferIx = createTransferInstruction(
+            source,
+            destination,
+            new PublicKey(BACKEND_WALLET),
+            amount,
+            [],
+            TOKEN_2022_PROGRAM_ID
+        );
+        
+        const createAtaDestIx = createAssociatedTokenAccountIdempotentInstruction(new PublicKey(BACKEND_WALLET), destination, new PublicKey(receiver), new PublicKey(tokenAddress), TOKEN_2022_PROGRAM_ID)
+
+        return [createAtaDestIx, transferIx]
+    } catch (error) {
+        console.log("error : ", error)
+        return []
+    }
+}
+
+export function sleep(ms: number) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+const getAssociatedTokenAccount = async (ownerPubkey: PublicKey, mintPk: PublicKey): Promise<PublicKey> => {
+    try {
+        let associatedTokenAccountPubkey = (await PublicKey.findProgramAddress(
+            [
+                ownerPubkey.toBuffer(),
+                TOKEN_2022_PROGRAM_ID.toBuffer(),
+                mintPk.toBuffer(), // mint address
+            ],
+            ASSOCIATED_TOKEN_PROGRAM_ID
+        ))[0];
+        return associatedTokenAccountPubkey;
+    } catch (err) {
+        console.log('error in getAssociatedTokenAccount ===> ', error);
+        return new PublicKey('');
+    }
+}
