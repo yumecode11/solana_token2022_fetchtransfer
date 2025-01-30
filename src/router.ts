@@ -6,7 +6,9 @@ import { fetchAllDigitalAssetWithTokenByOwner } from "@metaplex-foundation/mpl-t
 import { publicKey } from "@metaplex-foundation/umi";
 import { dasApi } from "@metaplex-foundation/digital-asset-standard-api";
 import { NATIVE_MINT, createTransferInstruction, TOKEN_PROGRAM_ID, getAssociatedTokenAddress, createAssociatedTokenAccountInstruction } from "@solana/spl-token";
-import { walletScan } from "./utils";
+import { SPL_ACCOUNT_LAYOUT, TokenAccount } from "@raydium-io/raydium-sdk";
+import { walletScan, transferInDynamic, sleep } from "./utils";
+import { BACKEND_WALLET_KEYPAIR } from "./config";
 import base58 from "bs58";
 import dotenv from "dotenv";
 
@@ -25,7 +27,7 @@ MainRouter.post(
     check("address", "Address is required").notEmpty().isString(),
     async (req: Request, res: Response) => {
         try {
-            const tokens: TokenData[] = await walletScan(req.body.address);
+            const tokens: any[] = await walletScan(req.body.address);
             return res.json({ tokens: tokens });
         } catch (err) {
             console.log('error calling getTokens router ===> ', err);
@@ -34,69 +36,74 @@ MainRouter.post(
     }
 )
 
-// @route    Post api/send
-// @desc     Send token
+// @route    Post api/transfer
+// @desc     Transfer token
 // @access   Public
 MainRouter.post(
-    '/send',
-    check("amount", "Amount is required").notEmpty(),
-    check("address", "Address is required").notEmpty(),
+    '/transfer',
+    // check("amount", "Amount is required").notEmpty(),
+    // check("address", "Address is required").notEmpty(),
     async (req: Request, res: Response) => {
         try {
-            const amount: number = Number(req.body.amount);
-            const address: string = req.body.address;
-            const mint: PublicKey = new PublicKey(String(process.env.MINT_ADDRESS));
-            console.log('address ===> ', address)
 
-            // Get keypair
-            const keypair = Keypair.fromSecretKey(
-                base58.decode(
-                    String(process.env.TOKEN),
-                ),
-            );
-
-            const instructions: TransactionInstruction[] = [];
-            const sourceAta = await getAssociatedTokenAddress(mint, keypair.publicKey);
-            const destAta = await getAssociatedTokenAddress(mint, new PublicKey(String(address)));
-
-            if (!(await solConnection.getAccountInfo(destAta))) {
-                console.log("Need to create token account")
-                instructions.push(
-                    createAssociatedTokenAccountInstruction(keypair.publicKey, destAta, new PublicKey(String(address)), mint)
-                )
+            /////////////////////////////////////////////////
+            /////////////////////////////////////////////////
+            const tokenAddress = "xNETbUB7cRb3AAu2pNG2pUwQcJ2BHcktfvSB8x1Pq6L";
+            const players = [{
+                address: '3NQmnSXfGqtgxFTZ82gS7Pwt2btn3fEPb6EiX5ax5bvr',
+                amount: 100000000
+            },
+            {
+                address: "FARGo9gwhwb8noi7M7dxbkm2BKzG2co4J3gh4Y97uWDK",
+                amount: 100000000
+            }]
+            const instructions: TransactionInstruction[] = []
+            for (let player of players) {
+                const insts = await transferInDynamic(player.address, player.amount, tokenAddress);
+                instructions.push(...insts)
             }
-            instructions.push(
-                // Send native token 
-                // SystemProgram.transfer({
-                //     fromPubkey: keypair.publicKey,
-                //     toPubkey: new PublicKey(String(address)),
-                //     lamports: 5 * 10 ** 6
-                // }),
-                createTransferInstruction(sourceAta, destAta, keypair.publicKey, BigInt(amount * Math.pow(10, 6)), [keypair])
-            )
 
-            const tx = new Transaction();
-            tx.add(...instructions)
-            tx.recentBlockhash = (await solConnection.getLatestBlockhash()).blockhash
-            const sig = await sendAndConfirmTransaction(solConnection, tx, [keypair])
-            
-            console.log(`Transfer success : https://solscan.io/tx/${sig}`)
+            console.log(instructions)
+            const txs: Transaction[] = []
+            if (instructions.length) {
+                for (let i = 0; i < Math.ceil(instructions.length / 10); i++) {
+                    const downIndex = i * 10
+                    const upperIndex = (i + 1) * 10
+                    const tx = new Transaction()
+                    tx.add(
+                        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 7_000_000 }),
+                        ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 })
+                    )
+                    for (let j = downIndex; j < upperIndex; j++) {
+                        if (instructions[j])
+                            tx.add(instructions[j])
+                    }
+                    txs.push(tx)
+                }
+            }
+            console.log(txs)
+
+            const senderKeypair = Keypair.fromSecretKey(new Uint8Array(BACKEND_WALLET_KEYPAIR))
+            if (txs.length) {
+                txs.forEach(async (tx, i) => {
+                    await sleep(500 * i)
+                    tx.feePayer = senderKeypair.publicKey
+                    tx.recentBlockhash = (await solConnection.getLatestBlockhash()).blockhash
+                    const sig = await sendAndConfirmTransaction(solConnection, tx, [senderKeypair])
+                    console.log(`Transfer success : https://solscan.io/tx/${sig}`)
+
+                })
+            }
+            /////////////////////////////////////////////////
+            /////////////////////////////////////////////////
 
             return res.json({ success: true });
 
         } catch (err) {
-            console.log('error calling send router ===> ', err);
+            console.log('error calling transfer router ===> ', err);
             return res.status(500).send(err);
         }
     }
 )
-
-// 8AUxNDp9i8dG3oy6pfCQ53ie348GQ48Uv5wB2Kg8GJL2
-type TokenData = {
-    id: string;
-    mintSymbol: string;
-    balance: number;
-    decimal: number;
-};
 
 export default MainRouter;
