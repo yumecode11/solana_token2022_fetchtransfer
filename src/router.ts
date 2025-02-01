@@ -16,7 +16,6 @@ dotenv.config();
 
 const MainRouter = Router();
 
-console.log("rpc url ===>", process.env.RPC)
 const solConnection = new Connection(String(process.env.RPC), "confirmed");
 
 // @route    Post api/getTokens
