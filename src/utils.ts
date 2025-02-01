@@ -31,6 +31,16 @@ export async function walletScan(address: string) {
                     .catch(err => console.error(err));
 
                 const metadata = await getTokenMetadata(connection, new PublicKey(String((SPL_ACCOUNT_LAYOUT.decode(account.data)).mint)), 'confirmed', TOKEN_2022_PROGRAM_ID);
+                if (!metadata) {
+                    continue;
+                }
+
+                const url = await fetch(encodeURI(metadata?.uri));
+                if (!url.ok) {
+                    continue;
+                }
+                const data = await url.json();
+                
                 const mint = await getMint(connection, new PublicKey(String((SPL_ACCOUNT_LAYOUT.decode(account.data)).mint)), 'confirmed', TOKEN_2022_PROGRAM_ID);
 
                 accounts.push({
@@ -39,7 +49,7 @@ export async function walletScan(address: string) {
                     mintSymbol: metadata?.symbol,
                     balance: parseInt((SPL_ACCOUNT_LAYOUT.decode(account.data)).amount, 10),
                     decimal: mint.decimals,
-                    uri: metadata?.uri,
+                    uri: data?.image,
                     price: price
                     //   programId: account.owner,
                 });
