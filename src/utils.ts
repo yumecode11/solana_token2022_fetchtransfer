@@ -38,6 +38,7 @@ export async function walletScan(address: string) {
                 const url = await fetch(encodeURI(metadata?.uri));
                 if (!url.ok) {
                     continue;
+                    // you can add other exception logic here
                 }
                 const data = await url.json();
                 
